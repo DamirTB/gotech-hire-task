@@ -11,6 +11,9 @@ export class Room {
   @Column({ nullable: true })
   description: string;
 
+  @Column({ nullable: true })
+  createdBy: number;
+
   @CreateDateColumn()
   createdAt: Date;
 }

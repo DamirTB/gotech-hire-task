@@ -1,4 +1,10 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn } from 'typeorm';
+import { Exclude } from 'class-transformer';
+
+export enum UserRole {
+  USER = 'user',
+  ADMIN = 'admin',
+}
 
 @Entity('users')
 export class User {
@@ -6,13 +12,14 @@ export class User {
   id: number;
 
   @Column({ unique: true })
-  username: string; // should have @Index() for query performance
+  username: string;
 
+  @Exclude()
   @Column()
-  password: string; // should have @Exclude() to prevent accidental exposure
+  password: string;
 
-  @Column({ default: 'user' })
-  role: string; // should be an enum
+  @Column({ default: UserRole.USER })
+  role: string;
 
   @CreateDateColumn()
   createdAt: Date;
