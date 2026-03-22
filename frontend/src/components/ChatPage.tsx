@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Socket } from 'socket.io-client';
+import React, { useState, useEffect, useRef } from 'react';
+import { io, Socket } from 'socket.io-client';
 import RoomList from './RoomList';
 import MessageItem from './MessageItem';
 import Header from '../class-components/Header.class';
@@ -13,23 +13,23 @@ interface Room {
 interface Message {
   id: number;
   content: string;
+  user_id: number;
+  room_id: number;
   username: string;
-  senderName: string;
   createdAt: string;
 }
 
 interface Props {
   token: string;
   userId: number;
-  socket: Socket;
   apiUrl: string;
   onLogout: () => void;
 }
 
-export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Props) {
-  const [rooms, setRooms] = useState<any[]>([]);
+export default function ChatPage({ token, userId, apiUrl, onLogout }: Props) {
+  const [rooms, setRooms] = useState<Room[]>([]);
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
-  const [messages, setMessages] = useState<any[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [newRoomName, setNewRoomName] = useState('');
   const [newRoomDesc, setNewRoomDesc] = useState('');
@@ -37,112 +37,117 @@ export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Pr
   const [username, setUsername] = useState('');
   const [isConnected, setIsConnected] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const socketRef = useRef<Socket | null>(null);
 
-  // FLAW: hardcoded URL (occurrence 4 of 4) - should use apiUrl prop
-  const HARDCODED_API = 'http://localhost:3000';
+  useEffect(() => {
+    const socket = io(apiUrl, { auth: { token } });
+    socketRef.current = socket;
+
+    socket.on('connect', () => setIsConnected(true));
+    socket.on('disconnect', () => setIsConnected(false));
+    socket.on('newMessage', (message: Message) => {
+      setMessages((prev) => [...prev, message]);
+    });
+
+    return () => {
+      socket.off('newMessage');
+      socket.off('connect');
+      socket.off('disconnect');
+      socket.disconnect();
+    };
+  }, [apiUrl, token]);
 
   useEffect(() => {
     fetchRooms();
     fetchCurrentUser();
-
-    socket.on('connect', () => {
-      setIsConnected(true);
-    });
-
-    socket.on('disconnect', () => {
-      setIsConnected(false);
-    });
-
-    // FLAW: on every WS message, re-fetches ALL messages via REST instead of just appending
-    socket.on('newMessage', (message: any) => {
-      console.log('New message received:', message);
-      // should just be: setMessages(prev => [...prev, message]);
-      if (selectedRoom) {
-        fetchMessages(selectedRoom.id); // re-fetches everything!
-      }
-    });
-
-    // FLAW: no socket.off() cleanup - causes memory leaks and duplicate handlers
-    // return () => { socket.off('newMessage'); socket.off('connect'); socket.off('disconnect'); };
-  }, []); // FLAW: missing deps [selectedRoom] - stale closure
+  }, []);
 
   const fetchCurrentUser = async () => {
-    // fetches all users just to find current user's username - very inefficient
-    const res = await fetch(`${HARDCODED_API}/users`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const users = await res.json();
-    const currentUser = users.find((u: any) => u.id === userId);
-    if (currentUser) {
-      setUsername(currentUser.username);
+    try {
+      const res = await fetch(`${apiUrl}/users/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const user = await res.json();
+      setUsername(user.username);
+    } catch {
+      // network error
     }
   };
 
   const fetchRooms = async () => {
-    const res = await fetch(`${HARDCODED_API}/chat/rooms`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const data = await res.json();
-    setRooms(data);
+    try {
+      const res = await fetch(`${apiUrl}/chat/rooms`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setRooms(data);
+    } catch {
+      // network error
+    }
   };
 
   const fetchMessages = async (roomId: number) => {
     setLoadingMessages(true);
-    const res = await fetch(`${HARDCODED_API}/chat/rooms/${roomId}/messages`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const data = await res.json();
-    setMessages(data);
-    setLoadingMessages(false);
+    try {
+      const res = await fetch(`${apiUrl}/chat/rooms/${roomId}/messages`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setMessages(data);
+    } catch {
+      // network error
+    } finally {
+      setLoadingMessages(false);
+    }
   };
 
   const handleRoomSelect = (room: Room) => {
     if (selectedRoom) {
-      socket.emit('leaveRoom', { roomId: selectedRoom.id });
+      socketRef.current?.emit('leaveRoom', { roomId: selectedRoom.id });
     }
     setSelectedRoom(room);
-    socket.emit('joinRoom', { roomId: room.id });
+    socketRef.current?.emit('joinRoom', { roomId: room.id });
     fetchMessages(room.id);
   };
 
-  const handleSendMessage = async () => {
+  const handleSendMessage = () => {
     if (!newMessage.trim() || !selectedRoom) return;
-
-    socket.emit('sendMessage', {
+    socketRef.current?.emit('sendMessage', {
       roomId: selectedRoom.id,
-      userId,              // FLAW: client supplies userId - no server-side verification
       content: newMessage,
-      senderName: username,
     });
-
     setNewMessage('');
   };
 
   const handleCreateRoom = async () => {
     if (!newRoomName.trim()) return;
-
-    await fetch(`${HARDCODED_API}/chat/rooms`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ name: newRoomName, description: newRoomDesc }),
-    });
-
-    setNewRoomName('');
-    setNewRoomDesc('');
-    setShowCreateRoom(false);
-    fetchRooms();
+    try {
+      await fetch(`${apiUrl}/chat/rooms`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ name: newRoomName, description: newRoomDesc }),
+      });
+      setNewRoomName('');
+      setNewRoomDesc('');
+      setShowCreateRoom(false);
+      fetchRooms();
+    } catch {
+      // network error
+    }
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
       handleSendMessage();
     }
   };
 
-  // inline styles duplicated throughout - no CSS modules or styled-components
   const containerStyle: React.CSSProperties = {
     display: 'flex',
     height: '100vh',
@@ -180,63 +185,104 @@ export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Pr
   return (
     <div style={containerStyle}>
       <div style={sidebarStyle}>
-        <Header username={username} isConnected={isConnected} onLogout={onLogout} />
+        <Header
+          username={username}
+          isConnected={isConnected}
+          onLogout={onLogout}
+        />
 
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: '10px',
+          }}
+        >
           <h3 style={{ margin: 0 }}>Rooms</h3>
-          <button onClick={() => setShowCreateRoom(!showCreateRoom)} style={{ fontSize: '20px', cursor: 'pointer', border: 'none', background: 'none' }}>+</button>
+          <button
+            onClick={() => setShowCreateRoom(!showCreateRoom)}
+            style={{
+              fontSize: '20px',
+              cursor: 'pointer',
+              border: 'none',
+              background: 'none',
+            }}
+          >
+            +
+          </button>
         </div>
 
         {showCreateRoom && (
-          <div style={{ marginBottom: '10px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
+          <div
+            style={{
+              marginBottom: '10px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '5px',
+            }}
+          >
             <input
               placeholder="Room name"
               value={newRoomName}
-              onChange={e => setNewRoomName(e.target.value)}
+              onChange={(e) => setNewRoomName(e.target.value)}
               style={{ padding: '5px' }}
             />
             <input
               placeholder="Description (optional)"
               value={newRoomDesc}
-              onChange={e => setNewRoomDesc(e.target.value)}
+              onChange={(e) => setNewRoomDesc(e.target.value)}
               style={{ padding: '5px' }}
             />
-            <button onClick={handleCreateRoom} style={{ padding: '5px', cursor: 'pointer' }}>Create</button>
+            <button
+              onClick={handleCreateRoom}
+              style={{ padding: '5px', cursor: 'pointer' }}
+            >
+              Create
+            </button>
           </div>
         )}
 
-        {/* Prop drilling: passing token, socket, apiUrl down just to pass further */}
         <RoomList
           rooms={rooms}
           selectedRoom={selectedRoom}
           onSelectRoom={handleRoomSelect}
-          token={token}
-          socket={socket}
-          apiUrl={apiUrl}
         />
       </div>
 
       <div style={mainStyle}>
         {selectedRoom ? (
           <>
-            <div style={{ padding: '10px', borderBottom: '1px solid #ddd', backgroundColor: '#f9f9f9' }}>
+            <div
+              style={{
+                padding: '10px',
+                borderBottom: '1px solid #ddd',
+                backgroundColor: '#f9f9f9',
+              }}
+            >
               <h3 style={{ margin: 0 }}>#{selectedRoom.name}</h3>
-              {selectedRoom.description && <p style={{ margin: '5px 0 0', color: '#666', fontSize: '14px' }}>{selectedRoom.description}</p>}
+              {selectedRoom.description && (
+                <p
+                  style={{
+                    margin: '5px 0 0',
+                    color: '#666',
+                    fontSize: '14px',
+                  }}
+                >
+                  {selectedRoom.description}
+                </p>
+              )}
             </div>
 
             <div style={messagesStyle}>
               {loadingMessages ? (
                 <p>Loading messages...</p>
               ) : (
-                messages.map((msg, index) => (
-                  // FLAW: using array index as key
+                messages.map((msg) => (
                   <MessageItem
-                    key={index}
+                    key={msg.id}
                     message={msg}
                     isOwn={msg.user_id === userId}
-                    token={token}
-                    socket={socket}
-                    apiUrl={apiUrl}
                   />
                 ))
               )}
@@ -245,21 +291,32 @@ export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Pr
             <div style={inputAreaStyle}>
               <input
                 value={newMessage}
-                onChange={e => setNewMessage(e.target.value)}
-                onKeyPress={handleKeyPress}
+                onChange={(e) => setNewMessage(e.target.value)}
+                onKeyDown={handleKeyDown}
                 placeholder="Type a message..."
                 style={{ flex: 1, padding: '8px', fontSize: '16px' }}
               />
               <button
                 onClick={handleSendMessage}
-                style={{ padding: '8px 16px', fontSize: '16px', cursor: 'pointer' }}
+                style={{
+                  padding: '8px 16px',
+                  fontSize: '16px',
+                  cursor: 'pointer',
+                }}
               >
                 Send
               </button>
             </div>
           </>
         ) : (
-          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', flex: 1 }}>
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+              flex: 1,
+            }}
+          >
             <p style={{ color: '#666' }}>Select a room to start chatting</p>
           </div>
         )}

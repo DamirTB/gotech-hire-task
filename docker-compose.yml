@@ -21,13 +21,18 @@ services:
     build: ./backend
     ports:
       - '3000:3000'
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    command: npm run start:dev
     environment:
       DB_HOST: postgres
       DB_PORT: '5432'
       DB_USER: postgres
       DB_PASSWORD: postgres
       DB_NAME: chatdb
-      # JWT_SECRET intentionally omitted - hardcoded in source as a flaw
+      JWT_SECRET: supersecret
+      CORS_ORIGIN: 'http://localhost:5173'
     depends_on:
       postgres:
         condition: service_healthy
@@ -36,6 +41,11 @@ services:
     build: ./frontend
     ports:
       - '5173:5173'
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      VITE_API_URL: 'http://localhost:3000'
     depends_on:
       - backend
 
